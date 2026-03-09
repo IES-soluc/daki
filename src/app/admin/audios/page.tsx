@@ -37,7 +37,7 @@ function formatarDuracao(segundos: number | null) {
 export default function GerenciarAudios() {
     // Estados do Acervo
     const [pastas, setPastas] = useState<Pasta[]>([])
-    const [todasPastas, setTodasPastas] = useState<Pasta[]>([]) // Para o Modal de Mover
+    const [todasPastas, setTodasPastas] = useState<Pasta[]>([])
     const [audios, setAudios] = useState<Audio[]>([])
 
     // Navegação Virtual
@@ -65,7 +65,7 @@ export default function GerenciarAudios() {
 
     useEffect(() => {
         carregarConteudo(pastaAtual?.id || null)
-        carregarTodasPastas() // Atualiza a lista completa de pastas para o select
+        carregarTodasPastas()
     }, [pastaAtual])
 
     // =======================================================================
@@ -127,13 +127,12 @@ export default function GerenciarAudios() {
         setSyncing(true)
         const toastId = toast.loading('Sincronizando com o Google Drive...')
         try {
-            // Chamaremos a API que fará a varredura do Drive e atualizará o banco
             const res = await fetch('/api/sync-drive', { method: 'POST' })
             const result = await res.json()
 
             if (!res.ok) throw new Error(result.error || 'Erro desconhecido')
 
-            toast.success(`Sincronização concluída! ${result.adicionados || 0} novos áudios encontrados.`, { id: toastId })
+            toast.success(`Sincronização concluída! ${result.adicionados || 0} novos áudios.`, { id: toastId })
             carregarConteudo(pastaAtual?.id || null)
         } catch (error: any) {
             toast.error(`Falha ao sincronizar: ${error.message}`, { id: toastId })
@@ -164,7 +163,6 @@ export default function GerenciarAudios() {
         if (!arquivo) return toast.error('Selecione o ficheiro de áudio')
         if (!titulo) return toast.error('O título é obrigatório')
 
-        // Bloqueio amigável de segurança para a Vercel
         if (arquivo.size > 4.5 * 1024 * 1024) {
             return toast.error('Arquivo muito grande! Envie direto pelo Google Drive e clique em "Sincronizar".')
         }
@@ -174,7 +172,7 @@ export default function GerenciarAudios() {
             const formData = new FormData()
             formData.append('file', arquivo)
             const uploadResponse = await fetch('/api/upload-drive', { method: 'POST', body: formData })
-            if (!uploadResponse.ok) throw new Error('Erro ao comunicar com o Google Drive (Arquivo pode ser muito grande)')
+            if (!uploadResponse.ok) throw new Error('Erro ao comunicar com o Google Drive.')
 
             const { fileId } = await uploadResponse.json()
             const { error: dbError } = await supabase.from('audios').insert([{
@@ -207,11 +205,15 @@ export default function GerenciarAudios() {
         setSalvandoEdicao(true)
 
         try {
+            // CORREÇÃO CRÍTICA: Se for string vazia (""), envia NULL para não quebrar a FK do Supabase
+            const pastaDestino = (!audioEditando.pasta_id || audioEditando.pasta_id === '')
+                ? null : audioEditando.pasta_id;
+
             const { error } = await supabase.from('audios').update({
                 titulo: audioEditando.titulo,
                 artista: audioEditando.tipo === 'musica' ? audioEditando.artista : null,
                 tipo: audioEditando.tipo,
-                pasta_id: audioEditando.pasta_id
+                pasta_id: pastaDestino
             }).eq('id', audioEditando.id)
 
             if (error) throw error
@@ -243,7 +245,7 @@ export default function GerenciarAudios() {
             if (fileId) await fetch(`/api/delete-drive?fileId=${fileId}`, { method: 'DELETE' })
             const { error } = await supabase.from('audios').delete().eq('id', id)
             if (error) throw error
-            toast.success('Ficheiro destruído com sucesso!')
+            toast.success('Áudio excluído com sucesso!')
             carregarConteudo(pastaAtual?.id || null)
         } catch (err: any) {
             toast.error('Erro ao excluir: ' + err.message)
@@ -253,12 +255,12 @@ export default function GerenciarAudios() {
     }
 
     async function excluirPasta(id: string) {
-        if (!confirm('ATENÇÃO: Excluir esta pasta apagará TODOS os áudios e subpastas dentro dela no sistema (Google Drive não será limpo). Tem certeza absoluta?')) return
+        if (!confirm('ATENÇÃO: Excluir esta pasta apagará TODOS os áudios e subpastas dentro dela no sistema. Tem certeza absoluta?')) return
         setDeletandoId(id)
         try {
             const { error } = await supabase.from('pastas').delete().eq('id', id)
             if (error) throw error
-            toast.success('Pasta e conteúdos removidos do banco de dados!')
+            toast.success('Pasta removida do banco de dados!')
             carregarConteudo(pastaAtual?.id || null)
             carregarTodasPastas()
         } catch (err: any) {
@@ -268,7 +270,7 @@ export default function GerenciarAudios() {
         }
     }
 
-    // Filtros
+    // Filtros visuais
     const pastasFiltradas = pastas.filter(p => p.nome.toLowerCase().includes(filtro.toLowerCase()))
     const audiosFiltrados = audios.filter(a => a.titulo.toLowerCase().includes(filtro.toLowerCase()) || (a.artista && a.artista.toLowerCase().includes(filtro.toLowerCase())))
 
@@ -311,7 +313,7 @@ export default function GerenciarAudios() {
 
                             <div>
                                 <label className="block text-xs font-bold text-text-muted mb-1">Mover para Pasta</label>
-                                <select value={audioEditando.pasta_id || ''} onChange={e => setAudioEditando({ ...audioEditando, pasta_id: e.target.value || null })} className="w-full p-3 border border-border bg-background text-text-main rounded-xl outline-none focus:ring-2 focus:ring-primary">
+                                <select value={audioEditando.pasta_id || ''} onChange={e => setAudioEditando({ ...audioEditando, pasta_id: e.target.value })} className="w-full p-3 border border-border bg-background text-text-main rounded-xl outline-none focus:ring-2 focus:ring-primary">
                                     <option value="">[ Raiz Principal ]</option>
                                     {todasPastas.map(p => (
                                         <option key={p.id} value={p.id}>📁 {p.nome}</option>
@@ -343,7 +345,7 @@ export default function GerenciarAudios() {
                 </div>
             </div>
 
-            {/* BREADCRUMBS... (Sem alterações) */}
+            {/* BREADCRUMBS */}
             <div className="flex items-center gap-2 text-sm font-bold text-text-muted bg-surface p-4 rounded-xl border border-border overflow-x-auto whitespace-nowrap shadow-sm">
                 <button onClick={() => irParaCaminhoIndex(-1)} className="hover:text-primary transition flex items-center gap-1"><Home size={16} /> Raiz</button>
                 {historicoPastas.map((p, idx) => (
@@ -360,7 +362,7 @@ export default function GerenciarAudios() {
                 )}
             </div>
 
-            {/* FORMULÁRIO RÁPIDO: NOVA PASTA (Sem alterações) */}
+            {/* FORMULÁRIO RÁPIDO: NOVA PASTA */}
             {criandoPasta && (
                 <form onSubmit={handleNovaPasta} className="bg-primary/5 border border-primary/20 p-4 rounded-xl flex gap-3 animate-in fade-in slide-in-from-top-4">
                     <div className="flex-1 relative">
@@ -379,7 +381,7 @@ export default function GerenciarAudios() {
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 border-b border-border pb-4 pt-2">
                     <div>
-                        <label className="block text-xs font-bold text-text-muted mb-1">Tipo de Áudio (Upload Rápido)</label>
+                        <label className="block text-xs font-bold text-text-muted mb-1">Tipo de Áudio</label>
                         <select value={tipo} onChange={e => { setTipo(e.target.value as any); if (e.target.value !== 'musica') setArtista('') }} className="w-full p-2 border border-border bg-background text-text-main rounded-lg outline-none focus:ring-2 focus:ring-primary font-bold">
                             <option value="vinheta">🎙️ Vinheta (Pequeno)</option>
                             <option value="comercial">💰 Comercial (Pequeno)</option>
@@ -417,7 +419,7 @@ export default function GerenciarAudios() {
                 </div>
             </form>
 
-            {/* LISTAGEM */}
+            {/* LISTAGEM PRINCIPAL */}
             <div className="bg-surface rounded-2xl shadow-sm border border-border overflow-hidden">
                 <div className="p-4 border-b border-border bg-background flex justify-between items-center">
                     <div className="relative w-72">
@@ -435,6 +437,7 @@ export default function GerenciarAudios() {
                             </tr>
                         )}
 
+                        {/* LINHAS DE PASTAS */}
                         {pastasFiltradas.map((pasta) => (
                             <tr key={pasta.id} className="hover:bg-background transition group">
                                 <td colSpan={2} className="p-4 cursor-pointer w-1/2" onClick={() => entrarNaPasta(pasta)}>
@@ -453,6 +456,7 @@ export default function GerenciarAudios() {
                             </tr>
                         ))}
 
+                        {/* LINHAS DE ÁUDIOS */}
                         {audiosFiltrados.map((audio) => (
                             <tr key={audio.id} className="hover:bg-background transition text-text-main group">
                                 <td className="p-4 w-1/2">
@@ -473,7 +477,6 @@ export default function GerenciarAudios() {
                                 </td>
                                 <td className="p-4 text-xs font-bold uppercase text-primary/70">{audio.tipo}</td>
                                 <td className="p-4 text-right flex justify-end gap-2">
-                                    {/* BOTÃO EDITAR / MOVER */}
                                     <button onClick={() => setAudioEditando(audio)} title="Editar e Mover" className="p-2 bg-background border border-transparent hover:border-blue-200 hover:bg-blue-50 text-text-muted hover:text-blue-500 rounded-lg transition opacity-0 group-hover:opacity-100 focus:opacity-100">
                                         <Edit2 size={16} />
                                     </button>
