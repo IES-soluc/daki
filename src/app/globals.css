@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+@theme {
+  /* Mapeando nossas variáveis CSS para as classes utilitárias do Tailwind v4 */
+  --color-primary: var(--primary);
+  --color-secondary: var(--secondary);
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-text-main: var(--text-main);
+  --color-text-muted: var(--text-muted);
+  --color-border: var(--border);
+
+  --font-main: var(--font-main);
+}
+
+/* =========================================
+   TEMA CLARO (Padrão)
+   ========================================= */
+:root {
+  /* Cores de Marca (Padrão/Fallback) */
+  --primary: #10b981;
+  /* Verde Emerald */
+  --secondary: #0f172a;
+  /* Slate escuro */
+
+  /* Estrutura */
+  --background: #f8fafc;
+  /* Fundo geral da página (Slate 50) */
+  --surface: #ffffff;
+  /* Fundo de cartões e painéis (Branco) */
+
+  /* Textos e Bordas */
+  --text-main: #1e293b;
+  /* Texto principal escuro */
+  --text-muted: #64748b;
+  /* Texto secundário/ícones */
+  --border: #e2e8f0;
+  /* Linhas divisórias */
+
+  /* Fonte Padrão */
+  --font-main: 'Inter', sans-serif;
+}
+
+/* =========================================
+   TEMA ESCURO (Dark Mode)
+   ========================================= */
+.dark {
+  /* A cor primária da rádio (ex: Verde) geralmente se mantém no Dark Mode */
+
+  /* Inversão de Estrutura */
+  --background: #0f172a;
+  /* Fundo geral fica escuro */
+  --surface: #1e293b;
+  /* Cartões ficam levemente mais claros que o fundo */
+
+  /* Inversão de Textos e Bordas */
+  --text-main: #f8fafc;
+  /* Texto principal fica claro */
+  --text-muted: #94a3b8;
+  /* Texto secundário */
+  --border: #334155;
+  /* Bordas escuras */
+}
+
+/* =========================================
+   COMPORTAMENTO GLOBAL
+   ========================================= */
+body {
+  background-color: var(--background);
+  color: var(--text-main);
+  /* Transição suave de 0.3s quando o usuário troca entre Claro/Escuro */
+  transition: background-color 0.3s ease, color 0.3s ease;
+}
