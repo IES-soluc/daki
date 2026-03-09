@@ -4,9 +4,6 @@ import { NextRequest } from 'next/server'
 export const dynamic = 'force-dynamic'
 
 export async function GET(req: NextRequest) {
-    const icecastHost = process.env.ICECAST_HOST || 'localhost'
-    const icecastPort = process.env.ICECAST_PORT || '8000'
-
     const stream = new ReadableStream({
         async start(controller) {
             const encoder = new TextEncoder()

@@ -6,7 +6,7 @@ import {
     Zap, Square, RefreshCw, SkipForward, Search, Play, Settings2
 } from 'lucide-react'
 import { useConfig } from '@/components/ConfigProvider'
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@/utils/supabase/client'
 import toast, { Toaster } from 'react-hot-toast'
 import Link from 'next/link'
 
@@ -16,6 +16,7 @@ interface Pedido { id: string; nome_ouvinte: string; mensagem: string; audios: {
 interface AudioItem { id: string; titulo: string; artista: string; tipo: string; }
 
 export default function AdminDashboard() {
+    const supabase = createClient()
     const { nome_radio } = useConfig()
     const [loading, setLoading] = useState(true)
 
@@ -200,8 +201,8 @@ export default function AdminDashboard() {
                                                     <p className="font-bold text-text-main text-sm truncate">{audio.titulo}</p>
                                                     <div className="flex items-center gap-2 mt-1">
                                                         <span className={`text-[10px] font-bold border px-1.5 py-0.5 rounded uppercase ${audio.tipo === 'musica' ? 'bg-blue-500/10 text-blue-600 border-blue-500/20' :
-                                                                audio.tipo === 'vinheta' ? 'bg-purple-500/10 text-purple-600 border-purple-500/20' :
-                                                                    'bg-orange-500/10 text-orange-600 border-orange-500/20'
+                                                            audio.tipo === 'vinheta' ? 'bg-purple-500/10 text-purple-600 border-purple-500/20' :
+                                                                'bg-orange-500/10 text-orange-600 border-orange-500/20'
                                                             }`}>
                                                             {audio.tipo}
                                                         </span>

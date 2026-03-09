@@ -1,12 +1,13 @@
 'use client'
 import { useState, useEffect } from 'react'
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@/utils/supabase/client'
 import toast, { Toaster } from 'react-hot-toast'
 import { Users, PlayCircle, XCircle, CheckCircle2, ListOrdered, Clock, History } from 'lucide-react'
 
 export default function GestaoPedidos() {
     const [pedidos, setPedidos] = useState<any[]>([])
     const [loading, setLoading] = useState(true)
+    const supabase = createClient()
 
     useEffect(() => {
         carregarPedidos()

@@ -1,6 +1,6 @@
 'use client'
 import { useState, useEffect } from 'react'
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@/utils/supabase/client'
 import toast, { Toaster } from 'react-hot-toast'
 import { Upload, Trash2, CheckCircle2, AlertCircle, Loader2, Folder, Clock } from 'lucide-react'
 import Link from 'next/link'
@@ -19,6 +19,8 @@ interface FileBatch {
     duracao_segundos: number // NOVO: Duração do arquivo em lote
     status: 'pendente' | 'uploading' | 'sucesso' | 'erro'
 }
+
+const supabase = createClient()
 
 // Utilitário para formatar a duração na tabela
 function formatarDuracao(segundos: number) {

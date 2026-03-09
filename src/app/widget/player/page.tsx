@@ -2,7 +2,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Play, Square, Loader2, Radio } from 'lucide-react'
 import { useConfig } from '@/components/ConfigProvider'
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@/utils/supabase/client'
 
 export default function WidgetPlayer() {
     const [isPlaying, setIsPlaying] = useState(false)
@@ -25,6 +25,7 @@ export default function WidgetPlayer() {
             const agora = new Date()
             const diaAtual = agora.getDay()
             const horaAtual = agora.toTimeString().slice(0, 5)
+            const supabase = createClient()
 
             const { data } = await supabase.from('playlists')
                 .select('nome')

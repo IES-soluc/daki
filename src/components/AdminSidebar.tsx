@@ -8,7 +8,7 @@ import {
     Settings, Users, ShieldAlert, Upload,
     Play, Square, Loader2
 } from 'lucide-react'
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@/utils/supabase/client'
 import { useConfig } from '@/components/ConfigProvider'
 
 export default function AdminSidebar() {
@@ -40,6 +40,7 @@ export default function AdminSidebar() {
     // --- A IMPLEMENTAÇÃO CORRETA DO LOGOUT ---
     const handleLogout = async () => {
         // 1. Apaga a sessão na API e limpa o LocalStorage
+        const supabase = createClient()
         await supabase.auth.signOut()
 
         // 2. Avisa o servidor Next.js para invalidar o cache da página atual

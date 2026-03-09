@@ -1,6 +1,6 @@
 'use client'
 import { useState, useEffect } from 'react'
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@/utils/supabase/client'
 import toast, { Toaster } from 'react-hot-toast'
 import { Settings, Plus, Trash2, ShieldAlert, Tag } from 'lucide-react'
 
@@ -27,7 +27,7 @@ export default function GestaoRegras() {
     // Limites de Execução de Bloco
     const [tipoLimite, setTipoLimite] = useState<'completo' | 'itens' | 'minutos'>('completo')
     const [valorLimite, setValorLimite] = useState('1')
-
+    const supabase = createClient()
     useEffect(() => { carregarDados() }, [])
 
     async function carregarDados() {

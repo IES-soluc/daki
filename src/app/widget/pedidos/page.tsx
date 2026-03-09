@@ -1,13 +1,13 @@
 'use client'
 import { useState, useEffect } from 'react'
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@/utils/supabase/client'
 import toast, { Toaster } from 'react-hot-toast'
 import { Music, Search, Send, User, MessageSquare } from 'lucide-react'
 import { useConfig } from '@/components/ConfigProvider'
 
 export default function WidgetPedidos() {
     const { nome_radio } = useConfig()
-
+    const supabase = createClient()
     // Estados de Busca
     const [busca, setBusca] = useState('')
     const [resultados, setResultados] = useState<any[]>([])

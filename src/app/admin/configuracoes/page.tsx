@@ -1,9 +1,10 @@
 'use client'
 import { useState, useEffect } from 'react'
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@/utils/supabase/client'
 import toast, { Toaster } from 'react-hot-toast'
 import { Settings, Save, Palette, Type, Layout, Share2, Image as ImageIcon } from 'lucide-react'
 
+const supabase = createClient()
 // 1. Interface para tipagem do estado
 interface ConfigState {
     nome_radio: string; descricao_radio: string; texto_rodape: string;

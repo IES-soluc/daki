@@ -1,6 +1,6 @@
 'use client'
 import { useState, useEffect, Fragment } from 'react'
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@/utils/supabase/client'
 import toast, { Toaster } from 'react-hot-toast'
 import { Upload, Headphones, Trash2, Search, Music, Mic, DollarSign, Loader2, Folder, FolderPlus, ChevronRight, Home, CornerUpLeft, Clock } from 'lucide-react'
 
@@ -20,6 +20,8 @@ interface Audio {
     pasta_id: string | null
     duracao_segundos: number | null // NOVO CAMPO
 }
+
+const supabase = createClient()
 
 // Função utilitária para formatar segundos em MM:SS
 function formatarDuracao(segundos: number | null) {

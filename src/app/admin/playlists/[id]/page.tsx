@@ -1,7 +1,7 @@
 'use client'
 import { useState, useEffect, Fragment } from 'react'
 import { useParams } from 'next/navigation'
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@/utils/supabase/client'
 import toast, { Toaster } from 'react-hot-toast'
 import { Music, Plus, Trash2, ArrowLeft, Search, ListOrdered, Folder, ChevronRight, Home, CornerUpLeft, Clock, Calendar, Save, Loader2, ArrowUp, ArrowDown } from 'lucide-react'
 import Link from 'next/link'
@@ -13,6 +13,7 @@ interface Pasta {
 }
 
 const DIAS_NOME = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb']
+const supabase = createClient()
 
 // Função utilitária para formatar os segundos
 function formatarDuracao(segundos: number | null) {

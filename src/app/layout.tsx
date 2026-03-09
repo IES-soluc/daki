@@ -1,7 +1,7 @@
 import '@/app/globals.css'
 import { cache } from 'react'
 import type { Metadata } from 'next'
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@/utils/supabase/client'
 import { ConfigProvider } from '@/components/ConfigProvider'
 
 // 1. Interface alinhada
@@ -27,6 +27,7 @@ export interface ConfigData {
 // 2. Cache e Busca
 const getGlobalConfig = cache(async (): Promise<ConfigData> => {
     try {
+        const supabase = createClient()
         const { data, error } = await supabase.from('configuracoes').select('*').single()
         if (error || !data) throw new Error('Erro ao buscar configurações')
         return data

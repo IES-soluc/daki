@@ -1,6 +1,6 @@
 'use client'
 import { useState, useEffect } from 'react'
-import { supabase } from '@/lib/supabase'
+import { createClient } from '@/utils/supabase/client'
 import toast, { Toaster } from 'react-hot-toast'
 import { ListMusic, Plus, Trash2, Settings2, Clock, FolderArchive, PlayCircle, Layers } from 'lucide-react'
 import Link from 'next/link'
@@ -22,6 +22,7 @@ function formatarTempoTotal(segundosTotais: number) {
 
 export default function GerenciarPlaylists() {
     const [playlists, setPlaylists] = useState<any[]>([])
+    const supabase = createClient()
     const [nome, setNome] = useState('')
     const [tipo, setTipo] = useState('musica')
 
