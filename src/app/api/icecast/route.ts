@@ -14,7 +14,7 @@ export async function GET(req: NextRequest) {
             // Função que busca os dados no Icecast e envia ao cliente
             const pushData = async () => {
                 try {
-                    const response = await fetch(`http://${icecastHost}:${icecastPort}/status-json.xsl`, {
+                    const response = await fetch(`https://radio.m1.ies.net.br/status-json.xsl`, {
                         headers: { 'Accept': 'application/json' },
                         cache: 'no-store' // Não queremos cache interno aqui, o SSE já é tempo real
                     })
