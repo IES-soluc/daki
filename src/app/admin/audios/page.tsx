@@ -5,25 +5,12 @@ import toast, { Toaster } from 'react-hot-toast'
 import {
     Upload, Headphones, Trash2, Search, Music, Mic, DollarSign,
     Loader2, Folder, FolderPlus, ChevronRight, Home, CornerUpLeft,
-    Clock, RefreshCw, Edit2, X, Save
+    Clock, RefreshCw, Edit2, X, Save, CheckSquare, MoveRight
 } from 'lucide-react'
 
-// Interfaces para tipagem
-interface Pasta {
-    id: string
-    nome: string
-    parent_id: string | null
-}
-
-interface Audio {
-    id: string
-    titulo: string
-    artista: string | null
-    tipo: 'musica' | 'vinheta' | 'comercial' | 'efeito'
-    caminho_arquivo: string
-    pasta_id: string | null
-    duracao_segundos: number | null
-}
+// Interfaces
+interface Pasta { id: string; nome: string; parent_id: string | null; }
+interface Audio { id: string; titulo: string; artista: string | null; tipo: 'musica' | 'vinheta' | 'comercial' | 'efeito'; caminho_arquivo: string; pasta_id: string | null; duracao_segundos: number | null; }
 
 const supabase = createClient()
 
@@ -51,9 +38,15 @@ export default function GerenciarAudios() {
     const [nomeNovaPasta, setNomeNovaPasta] = useState('')
     const [syncing, setSyncing] = useState(false)
 
-    // Estados de Edição/Mover
+    // Estados de Edição Única
     const [audioEditando, setAudioEditando] = useState<Audio | null>(null)
     const [salvandoEdicao, setSalvandoEdicao] = useState(false)
+
+    // NOVO: Estados de Ação em Lote
+    const [selecionados, setSelecionados] = useState<Set<string>>(new Set())
+    const [processandoLote, setProcessandoLote] = useState(false)
+    const [mostrarModalMoverLote, setMostrarModalMoverLote] = useState(false)
+    const [pastaDestinoLote, setPastaDestinoLote] = useState<string>('')
 
     // Estados de Upload
     const [arquivo, setArquivo] = useState<File | null>(null)
@@ -66,12 +59,13 @@ export default function GerenciarAudios() {
     useEffect(() => {
         carregarConteudo(pastaAtual?.id || null)
         carregarTodasPastas()
+        // Limpa a seleção ao mudar de pasta
+        setSelecionados(new Set())
     }, [pastaAtual])
 
     // =======================================================================
     // FUNÇÕES DE DADOS E NAVEGAÇÃO
     // =======================================================================
-
     async function carregarTodasPastas() {
         const { data } = await supabase.from('pastas').select('*').order('nome')
         if (data) setTodasPastas(data)
@@ -87,7 +81,6 @@ export default function GerenciarAudios() {
         else queryAudios = queryAudios.is('pasta_id', null)
 
         const [resPastas, resAudios] = await Promise.all([queryPastas, queryAudios])
-
         if (resPastas.data) setPastas(resPastas.data)
         if (resAudios.data) setAudios(resAudios.data)
     }
@@ -99,10 +92,7 @@ export default function GerenciarAudios() {
     }
 
     function voltarPastaAcima() {
-        if (historicoPastas.length === 0) {
-            setPastaAtual(null)
-            return
-        }
+        if (historicoPastas.length === 0) { setPastaAtual(null); return }
         const novoHistorico = [...historicoPastas]
         const pastaAnterior = novoHistorico.pop() || null
         setHistoricoPastas(novoHistorico)
@@ -110,62 +100,119 @@ export default function GerenciarAudios() {
     }
 
     function irParaCaminhoIndex(index: number) {
-        if (index === -1) {
-            setPastaAtual(null)
-            setHistoricoPastas([])
-        } else {
-            setPastaAtual(historicoPastas[index])
-            setHistoricoPastas(historicoPastas.slice(0, index))
-        }
+        if (index === -1) { setPastaAtual(null); setHistoricoPastas([]) }
+        else { setPastaAtual(historicoPastas[index]); setHistoricoPastas(historicoPastas.slice(0, index)) }
     }
 
     // =======================================================================
-    // SINCRONIZAÇÃO E UPLOAD
+    // NOVO: FUNÇÕES DE AÇÃO EM LOTE (SELEÇÃO)
     // =======================================================================
+    function toggleSelecao(id: string) {
+        const novaSelecao = new Set(selecionados)
+        if (novaSelecao.has(id)) novaSelecao.delete(id)
+        else novaSelecao.add(id)
+        setSelecionados(novaSelecao)
+    }
 
+    function toggleSelecionarTodos() {
+        if (selecionados.size === audiosFiltrados.length) {
+            setSelecionados(new Set()) // Desmarca todos
+        } else {
+            setSelecionados(new Set(audiosFiltrados.map(a => a.id))) // Marca todos os vísiveis
+        }
+    }
+
+    async function excluirSelecionadosLote() {
+        if (selecionados.size === 0) return
+        if (!confirm(`ATENÇÃO: Excluir permanentemente ${selecionados.size} ficheiros de áudio do sistema e do Google Drive?`)) return
+
+        setProcessandoLote(true)
+        const toastId = toast.loading(`A excluir ${selecionados.size} áudios...`)
+
+        try {
+            // Pega os áudios que vão ser apagados para buscar os fileIds do Drive
+            const audiosAExcluir = audios.filter(a => selecionados.has(a.id))
+
+            // 1. Apaga do Banco de Dados em Lote (Supabase)
+            const idsParaExcluir = Array.from(selecionados)
+            const { error } = await supabase.from('audios').delete().in('id', idsParaExcluir)
+            if (error) throw error
+
+            // 2. Tenta apagar do Google Drive um por um
+            for (const audio of audiosAExcluir) {
+                if (audio.caminho_arquivo) {
+                    await fetch(`/api/delete-drive?fileId=${audio.caminho_arquivo}`, { method: 'DELETE' }).catch(() => { })
+                }
+            }
+
+            toast.success(`${selecionados.size} áudios excluídos com sucesso!`, { id: toastId })
+            setSelecionados(new Set())
+            carregarConteudo(pastaAtual?.id || null)
+        } catch (err: any) {
+            toast.error('Erro na exclusão em lote: ' + err.message, { id: toastId })
+        } finally {
+            setProcessandoLote(false)
+        }
+    }
+
+    async function moverSelecionadosLote() {
+        if (selecionados.size === 0) return
+        setProcessandoLote(true)
+        const toastId = toast.loading(`A mover ${selecionados.size} áudios...`)
+
+        try {
+            const pastaDestino = pastaDestinoLote === '' ? null : pastaDestinoLote
+            const idsParaMover = Array.from(selecionados)
+
+            // Atualiza todos os IDs selecionados com o novo pasta_id
+            const { error } = await supabase.from('audios').update({ pasta_id: pastaDestino }).in('id', idsParaMover)
+
+            if (error) throw error
+
+            toast.success(`Áudios movidos com sucesso!`, { id: toastId })
+            setSelecionados(new Set())
+            setMostrarModalMoverLote(false)
+            carregarConteudo(pastaAtual?.id || null)
+        } catch (error: any) {
+            toast.error('Erro ao mover em lote: ' + error.message, { id: toastId })
+        } finally {
+            setProcessandoLote(false)
+        }
+    }
+
+
+    // =======================================================================
+    // SINCRONIZAÇÃO, UPLOAD, EDIÇÃO ÚNICA E EXCLUSÃO (MANTIDOS)
+    // =======================================================================
     async function handleSyncDrive() {
         setSyncing(true)
         const toastId = toast.loading('Sincronizando com o Google Drive...')
         try {
             const res = await fetch('/api/sync-drive', { method: 'POST' })
             const result = await res.json()
-
             if (!res.ok) throw new Error(result.error || 'Erro desconhecido')
-
             toast.success(`Sincronização concluída! ${result.adicionados || 0} novos áudios.`, { id: toastId })
             carregarConteudo(pastaAtual?.id || null)
-        } catch (error: any) {
-            toast.error(`Falha ao sincronizar: ${error.message}`, { id: toastId })
-        } finally {
-            setSyncing(false)
-        }
+        } catch (error: any) { toast.error(`Falha: ${error.message}`, { id: toastId }) }
+        finally { setSyncing(false) }
     }
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0] || null
-        setArquivo(file)
+        const file = e.target.files?.[0] || null; setArquivo(file)
         if (file) {
             const audioObj = document.createElement('audio')
             const objectUrl = URL.createObjectURL(file)
-            audioObj.addEventListener('loadedmetadata', () => {
-                setDuracao(Math.round(audioObj.duration))
-                URL.revokeObjectURL(objectUrl)
-            })
+            audioObj.addEventListener('loadedmetadata', () => { setDuracao(Math.round(audioObj.duration)); URL.revokeObjectURL(objectUrl) })
             audioObj.src = objectUrl
             if (!titulo) setTitulo(file.name.replace(/\.[^/.]+$/, ""))
-        } else {
-            setDuracao(0)
-        }
+        } else { setDuracao(0) }
     }
 
     async function handleUpload(e: React.FormEvent) {
         e.preventDefault()
-        if (!arquivo) return toast.error('Selecione o ficheiro de áudio')
+        if (!arquivo) return toast.error('Selecione o ficheiro')
         if (!titulo) return toast.error('O título é obrigatório')
-
-        if (arquivo.size > 4.5 * 1024 * 1024) {
-            return toast.error('Arquivo muito grande! Envie direto pelo Google Drive e clique em "Sincronizar".')
-        }
+        if (arquivo.size > 4.5 * 1024 * 1024) return toast.error('Arquivo muito grande! Use o Google Drive e clique "Sincronizar".')
 
         setUploading(true)
         try {
@@ -180,7 +227,6 @@ export default function GerenciarAudios() {
                 tipo, caminho_arquivo: fileId, ativo: true,
                 pasta_id: pastaAtual?.id || null, duracao_segundos: duracao
             }])
-
             if (dbError) throw dbError
 
             toast.success('Áudio adicionado com sucesso!')
@@ -188,43 +234,26 @@ export default function GerenciarAudios() {
             const fileInput = document.getElementById('file-upload') as HTMLInputElement
             if (fileInput) fileInput.value = ''
             carregarConteudo(pastaAtual?.id || null)
-        } catch (err: any) {
-            toast.error('Erro no upload: ' + err.message)
-        } finally {
-            setUploading(false)
-        }
+        } catch (err: any) { toast.error('Erro no upload: ' + err.message) }
+        finally { setUploading(false) }
     }
-
-    // =======================================================================
-    // EDIÇÃO E EXCLUSÃO
-    // =======================================================================
 
     async function salvarEdicaoAudio(e: React.FormEvent) {
         e.preventDefault()
         if (!audioEditando) return
         setSalvandoEdicao(true)
-
         try {
-            // CORREÇÃO CRÍTICA: Se for string vazia (""), envia NULL para não quebrar a FK do Supabase
-            const pastaDestino = (!audioEditando.pasta_id || audioEditando.pasta_id === '')
-                ? null : audioEditando.pasta_id;
-
+            const pastaDestino = (!audioEditando.pasta_id || audioEditando.pasta_id === '') ? null : audioEditando.pasta_id;
             const { error } = await supabase.from('audios').update({
-                titulo: audioEditando.titulo,
-                artista: audioEditando.tipo === 'musica' ? audioEditando.artista : null,
-                tipo: audioEditando.tipo,
-                pasta_id: pastaDestino
+                titulo: audioEditando.titulo, artista: audioEditando.tipo === 'musica' ? audioEditando.artista : null,
+                tipo: audioEditando.tipo, pasta_id: pastaDestino
             }).eq('id', audioEditando.id)
-
             if (error) throw error
-            toast.success('Áudio atualizado e movido!')
+            toast.success('Áudio atualizado!')
             setAudioEditando(null)
             carregarConteudo(pastaAtual?.id || null)
-        } catch (error: any) {
-            toast.error('Erro ao atualizar: ' + error.message)
-        } finally {
-            setSalvandoEdicao(false)
-        }
+        } catch (error: any) { toast.error('Erro ao atualizar: ' + error.message) }
+        finally { setSalvandoEdicao(false) }
     }
 
     async function handleNovaPasta(e: React.FormEvent) {
@@ -232,10 +261,7 @@ export default function GerenciarAudios() {
         if (!nomeNovaPasta.trim()) return
         const { error } = await supabase.from('pastas').insert([{ nome: nomeNovaPasta.trim(), parent_id: pastaAtual?.id || null }])
         if (error) toast.error('Erro ao criar pasta.')
-        else {
-            toast.success('Pasta criada!')
-            setNomeNovaPasta(''); setCriandoPasta(false); carregarConteudo(pastaAtual?.id || null); carregarTodasPastas();
-        }
+        else { toast.success('Pasta criada!'); setNomeNovaPasta(''); setCriandoPasta(false); carregarConteudo(pastaAtual?.id || null); carregarTodasPastas(); }
     }
 
     async function excluirAudio(id: string, fileId: string) {
@@ -247,11 +273,12 @@ export default function GerenciarAudios() {
             if (error) throw error
             toast.success('Áudio excluído com sucesso!')
             carregarConteudo(pastaAtual?.id || null)
-        } catch (err: any) {
-            toast.error('Erro ao excluir: ' + err.message)
-        } finally {
-            setDeletandoId(null)
-        }
+            // Se estava selecionado, remove da seleção
+            if (selecionados.has(id)) {
+                const nova = new Set(selecionados); nova.delete(id); setSelecionados(nova);
+            }
+        } catch (err: any) { toast.error('Erro ao excluir: ' + err.message) }
+        finally { setDeletandoId(null) }
     }
 
     async function excluirPasta(id: string) {
@@ -261,24 +288,45 @@ export default function GerenciarAudios() {
             const { error } = await supabase.from('pastas').delete().eq('id', id)
             if (error) throw error
             toast.success('Pasta removida do banco de dados!')
-            carregarConteudo(pastaAtual?.id || null)
-            carregarTodasPastas()
-        } catch (err: any) {
-            toast.error('Erro ao excluir pasta: ' + err.message)
-        } finally {
-            setDeletandoId(null)
-        }
+            carregarConteudo(pastaAtual?.id || null); carregarTodasPastas()
+        } catch (err: any) { toast.error('Erro ao excluir pasta: ' + err.message) }
+        finally { setDeletandoId(null) }
     }
 
     // Filtros visuais
     const pastasFiltradas = pastas.filter(p => p.nome.toLowerCase().includes(filtro.toLowerCase()))
     const audiosFiltrados = audios.filter(a => a.titulo.toLowerCase().includes(filtro.toLowerCase()) || (a.artista && a.artista.toLowerCase().includes(filtro.toLowerCase())))
+    const todosSelecionados = audiosFiltrados.length > 0 && selecionados.size === audiosFiltrados.length;
 
     return (
         <div className="p-6 max-w-6xl mx-auto space-y-6 relative">
             <Toaster />
 
-            {/* MODAL DE EDIÇÃO / MOVER */}
+            {/* MODAL DE MOVER EM LOTE */}
+            {mostrarModalMoverLote && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in">
+                    <div className="bg-surface w-full max-w-md p-6 rounded-3xl shadow-2xl border border-border">
+                        <div className="flex justify-between items-center mb-4 border-b border-border pb-4">
+                            <h2 className="text-xl font-black text-text-main flex items-center gap-2"><Folder size={20} className="text-primary" /> Mover Selecionados</h2>
+                            <button onClick={() => setMostrarModalMoverLote(false)} className="text-text-muted hover:text-red-500 transition p-1"><X size={24} /></button>
+                        </div>
+                        <p className="text-sm font-medium text-text-muted mb-4">Você está a mover <strong>{selecionados.size}</strong> áudios.</p>
+
+                        <label className="block text-xs font-bold text-text-muted mb-1">Destino</label>
+                        <select value={pastaDestinoLote} onChange={e => setPastaDestinoLote(e.target.value)} className="w-full p-3 border border-border bg-background text-text-main rounded-xl outline-none focus:ring-2 focus:ring-primary mb-6">
+                            <option value="">[ Raiz Principal ]</option>
+                            {todasPastas.map(p => (<option key={p.id} value={p.id}>📁 {p.nome}</option>))}
+                        </select>
+
+                        <button onClick={moverSelecionadosLote} disabled={processandoLote} className="w-full bg-primary text-white font-bold py-4 rounded-xl hover:bg-primary/90 transition flex justify-center items-center gap-2 shadow-lg disabled:opacity-50">
+                            {processandoLote ? <Loader2 size={20} className="animate-spin" /> : <MoveRight size={20} />}
+                            {processandoLote ? 'Movendo...' : 'Confirmar Movimentação'}
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* MODAL DE EDIÇÃO ÚNICA */}
             {audioEditando && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in">
                     <form onSubmit={salvarEdicaoAudio} className="bg-surface w-full max-w-md p-6 rounded-3xl shadow-2xl border border-border">
@@ -286,13 +334,11 @@ export default function GerenciarAudios() {
                             <h2 className="text-xl font-black text-text-main flex items-center gap-2"><Edit2 size={20} className="text-primary" /> Editar Áudio</h2>
                             <button type="button" onClick={() => setAudioEditando(null)} className="text-text-muted hover:text-red-500 transition p-1"><X size={24} /></button>
                         </div>
-
                         <div className="space-y-4">
                             <div>
                                 <label className="block text-xs font-bold text-text-muted mb-1">Título</label>
                                 <input type="text" value={audioEditando.titulo} onChange={e => setAudioEditando({ ...audioEditando, titulo: e.target.value })} className="w-full p-3 border border-border bg-background text-text-main rounded-xl outline-none focus:ring-2 focus:ring-primary font-bold" required />
                             </div>
-
                             <div className="grid grid-cols-2 gap-4">
                                 <div>
                                     <label className="block text-xs font-bold text-text-muted mb-1">Tipo</label>
@@ -310,36 +356,51 @@ export default function GerenciarAudios() {
                                     </div>
                                 )}
                             </div>
-
                             <div>
-                                <label className="block text-xs font-bold text-text-muted mb-1">Mover para Pasta</label>
+                                <label className="block text-xs font-bold text-text-muted mb-1">Pasta</label>
                                 <select value={audioEditando.pasta_id || ''} onChange={e => setAudioEditando({ ...audioEditando, pasta_id: e.target.value })} className="w-full p-3 border border-border bg-background text-text-main rounded-xl outline-none focus:ring-2 focus:ring-primary">
                                     <option value="">[ Raiz Principal ]</option>
-                                    {todasPastas.map(p => (
-                                        <option key={p.id} value={p.id}>📁 {p.nome}</option>
-                                    ))}
+                                    {todasPastas.map(p => (<option key={p.id} value={p.id}>📁 {p.nome}</option>))}
                                 </select>
                             </div>
                         </div>
-
-                        <button type="submit" disabled={salvandoEdicao} className="w-full mt-6 bg-primary text-white font-bold py-4 rounded-xl hover:bg-primary/90 transition flex justify-center items-center gap-2 shadow-lg shadow-primary/20 disabled:opacity-50">
-                            {salvandoEdicao ? <Loader2 size={20} className="animate-spin" /> : <Save size={20} />}
-                            {salvandoEdicao ? 'Salvando...' : 'Salvar Alterações'}
+                        <button type="submit" disabled={salvandoEdicao} className="w-full mt-6 bg-primary text-white font-bold py-4 rounded-xl flex justify-center items-center gap-2 shadow-lg disabled:opacity-50">
+                            {salvandoEdicao ? <Loader2 size={20} className="animate-spin" /> : <Save size={20} />} Salvar Alterações
                         </button>
                     </form>
                 </div>
             )}
 
-            {/* CABEÇALHO */}
+            {/* BARRA FLUTUANTE DE AÇÕES EM LOTE */}
+            {selecionados.size > 0 && (
+                <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-surface border border-border shadow-2xl px-6 py-4 rounded-full flex items-center gap-6 z-40 animate-in slide-in-from-bottom-8 fade-in duration-300">
+                    <span className="font-bold text-text-main flex items-center gap-2">
+                        <CheckSquare size={18} className="text-primary" />
+                        {selecionados.size} selecionado(s)
+                    </span>
+                    <div className="w-px h-6 bg-border"></div>
+                    <button onClick={() => setMostrarModalMoverLote(true)} disabled={processandoLote} className="text-sm font-bold text-text-muted hover:text-blue-500 transition flex items-center gap-1 disabled:opacity-50">
+                        <Folder size={16} /> Mover
+                    </button>
+                    <button onClick={excluirSelecionadosLote} disabled={processandoLote} className="text-sm font-bold text-text-muted hover:text-red-500 transition flex items-center gap-1 disabled:opacity-50">
+                        <Trash2 size={16} /> Excluir
+                    </button>
+                    <button onClick={() => setSelecionados(new Set())} className="ml-4 p-1 text-text-muted hover:text-text-main rounded-full hover:bg-background transition">
+                        <X size={18} />
+                    </button>
+                </div>
+            )}
+
+            {/* CABEÇALHO E FERRAMENTAS SUPERIORES */}
             <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-4">
                 <h1 className="text-3xl font-bold text-text-main flex items-center gap-2">
                     <Headphones className="text-primary" /> Gestor de Acervo
                 </h1>
                 <div className="flex gap-3 w-full md:w-auto">
-                    <button onClick={handleSyncDrive} disabled={syncing} className="flex-1 md:flex-none bg-blue-500/10 text-blue-600 hover:bg-blue-500 hover:text-white border border-blue-500/20 font-bold py-2 px-4 rounded-xl flex items-center justify-center gap-2 transition shadow-sm disabled:opacity-50">
+                    <button onClick={handleSyncDrive} disabled={syncing} className="flex-1 md:flex-none bg-blue-500/10 text-blue-600 hover:bg-blue-500 hover:text-white font-bold py-2 px-4 rounded-xl flex items-center gap-2 transition">
                         <RefreshCw size={18} className={syncing ? 'animate-spin' : ''} /> {syncing ? 'Buscando...' : 'Sincronizar Drive'}
                     </button>
-                    <button onClick={() => setCriandoPasta(!criandoPasta)} className="flex-1 md:flex-none bg-surface border border-border text-text-main hover:text-primary font-bold py-2 px-4 rounded-xl flex items-center justify-center gap-2 transition shadow-sm">
+                    <button onClick={() => setCriandoPasta(!criandoPasta)} className="flex-1 md:flex-none bg-surface border border-border text-text-main hover:text-primary font-bold py-2 px-4 rounded-xl flex items-center gap-2 transition">
                         <FolderPlus size={18} /> Nova Pasta
                     </button>
                 </div>
@@ -362,30 +423,27 @@ export default function GerenciarAudios() {
                 )}
             </div>
 
-            {/* FORMULÁRIO RÁPIDO: NOVA PASTA */}
+            {/* FORMULÁRIOS (Nova Pasta / Upload) */}
             {criandoPasta && (
-                <form onSubmit={handleNovaPasta} className="bg-primary/5 border border-primary/20 p-4 rounded-xl flex gap-3 animate-in fade-in slide-in-from-top-4">
+                <form onSubmit={handleNovaPasta} className="bg-primary/5 border border-primary/20 p-4 rounded-xl flex gap-3 animate-in fade-in">
                     <div className="flex-1 relative">
                         <Folder className="absolute left-3 top-3 text-primary/50" size={18} />
-                        <input autoFocus type="text" placeholder="Nome da nova pasta..." value={nomeNovaPasta} onChange={e => setNomeNovaPasta(e.target.value)} className="w-full p-2 pl-10 border border-primary/30 bg-background text-text-main rounded-lg outline-none focus:ring-2 focus:ring-primary font-bold" />
+                        <input autoFocus type="text" placeholder="Nome da nova pasta..." value={nomeNovaPasta} onChange={e => setNomeNovaPasta(e.target.value)} className="w-full p-2 pl-10 border border-primary/30 bg-background text-text-main rounded-lg outline-none font-bold" />
                     </div>
-                    <button type="submit" className="bg-primary text-white font-bold py-2 px-6 rounded-lg hover:bg-primary/90 transition">Criar</button>
-                    <button type="button" onClick={() => setCriandoPasta(false)} className="bg-surface border border-border text-text-muted font-bold py-2 px-6 rounded-lg hover:bg-background transition">Cancelar</button>
+                    <button type="submit" className="bg-primary text-white font-bold py-2 px-6 rounded-lg transition">Criar</button>
+                    <button type="button" onClick={() => setCriandoPasta(false)} className="bg-surface border border-border font-bold py-2 px-6 rounded-lg transition">Cancelar</button>
                 </form>
             )}
 
-            {/* FORMULÁRIO DE UPLOAD */}
-            <form onSubmit={handleUpload} className="bg-surface p-6 rounded-2xl shadow-sm border border-border space-y-4 relative overflow-hidden">
-                <div className="absolute top-0 right-0 bg-orange-500/10 text-orange-600 px-4 py-1 text-[10px] font-black uppercase rounded-bl-xl border-b border-l border-orange-500/20">
-                    Músicas longas? Use o Google Drive
-                </div>
+            <form onSubmit={handleUpload} className="bg-surface p-6 rounded-2xl shadow-sm border border-border space-y-4 relative">
+                <div className="absolute top-0 right-0 bg-orange-500/10 text-orange-600 px-4 py-1 text-[10px] font-black uppercase rounded-bl-xl border-b border-l border-orange-500/20">Músicas longas? Use o Google Drive</div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 border-b border-border pb-4 pt-2">
                     <div>
-                        <label className="block text-xs font-bold text-text-muted mb-1">Tipo de Áudio</label>
-                        <select value={tipo} onChange={e => { setTipo(e.target.value as any); if (e.target.value !== 'musica') setArtista('') }} className="w-full p-2 border border-border bg-background text-text-main rounded-lg outline-none focus:ring-2 focus:ring-primary font-bold">
-                            <option value="vinheta">🎙️ Vinheta (Pequeno)</option>
-                            <option value="comercial">💰 Comercial (Pequeno)</option>
-                            <option value="efeito">⚡ Efeito (Pequeno)</option>
+                        <label className="block text-xs font-bold text-text-muted mb-1">Tipo</label>
+                        <select value={tipo} onChange={e => { setTipo(e.target.value as any); if (e.target.value !== 'musica') setArtista('') }} className="w-full p-2 border border-border bg-background text-text-main rounded-lg outline-none font-bold">
+                            <option value="vinheta">🎙️ Vinheta</option>
+                            <option value="comercial">💰 Comercial</option>
+                            <option value="efeito">⚡ Efeito</option>
                             <option value="musica">🎵 Música Única</option>
                         </select>
                     </div>
@@ -397,34 +455,29 @@ export default function GerenciarAudios() {
                         <input id="file-upload" type="file" accept="audio/*" onChange={handleFileChange} className="w-full text-sm text-text-muted file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:bg-primary/10 file:text-primary file:font-bold hover:file:bg-primary/20 cursor-pointer" />
                     </div>
                 </div>
-
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
-                        <label className="block text-xs font-bold text-text-muted mb-1">{tipo === 'musica' ? 'Nome da Música' : 'Nome de Identificação'}</label>
-                        <input type="text" value={titulo} onChange={e => setTitulo(e.target.value)} className="w-full p-2 border border-border bg-background text-text-main rounded-lg outline-none focus:ring-2 focus:ring-primary" placeholder="Digite o título..." />
+                        <input type="text" value={titulo} onChange={e => setTitulo(e.target.value)} className="w-full p-2 border border-border bg-background text-text-main rounded-lg outline-none focus:ring-primary" placeholder="Título..." />
                     </div>
                     {tipo === 'musica' && (
                         <div>
-                            <label className="block text-xs font-bold text-text-muted mb-1">Artista / Banda</label>
-                            <input type="text" value={artista} onChange={e => setArtista(e.target.value)} className="w-full p-2 border border-border bg-background text-text-main rounded-lg outline-none focus:ring-2 focus:ring-primary" placeholder="Nome..." />
+                            <input type="text" value={artista} onChange={e => setArtista(e.target.value)} className="w-full p-2 border border-border bg-background text-text-main rounded-lg outline-none focus:ring-primary" placeholder="Artista..." />
                         </div>
                     )}
                 </div>
-
                 <div className="flex justify-end pt-2">
-                    <button type="submit" disabled={uploading} className="bg-primary text-white font-bold py-2 px-8 rounded-xl hover:opacity-90 transition disabled:opacity-50 flex items-center gap-2">
-                        {uploading ? <Loader2 size={18} className="animate-spin" /> : <Upload size={18} />}
-                        {uploading ? 'A enviar...' : `Salvar em ${pastaAtual ? pastaAtual.nome : 'Raiz'}`}
+                    <button type="submit" disabled={uploading} className="bg-primary text-white font-bold py-2 px-8 rounded-xl flex items-center gap-2 disabled:opacity-50">
+                        {uploading ? <Loader2 size={18} className="animate-spin" /> : <Upload size={18} />} Enviar
                     </button>
                 </div>
             </form>
 
-            {/* LISTAGEM PRINCIPAL */}
+            {/* LISTAGEM DE PASTAS E ÁUDIOS */}
             <div className="bg-surface rounded-2xl shadow-sm border border-border overflow-hidden">
                 <div className="p-4 border-b border-border bg-background flex justify-between items-center">
                     <div className="relative w-72">
                         <Search size={16} className="absolute left-3 top-3 text-text-muted" />
-                        <input type="text" placeholder="Buscar na pasta atual..." value={filtro} onChange={e => setFiltro(e.target.value)} className="w-full p-2 pl-9 border border-border bg-surface text-text-main rounded-lg text-sm outline-none focus:ring-2 focus:ring-primary" />
+                        <input type="text" placeholder="Buscar..." value={filtro} onChange={e => setFiltro(e.target.value)} className="w-full p-2 pl-9 border border-border bg-surface text-text-main rounded-lg text-sm outline-none" />
                     </div>
                     <span className="text-xs font-bold text-text-muted">{pastasFiltradas.length} pastas, {audiosFiltrados.length} áudios</span>
                 </div>
@@ -433,39 +486,53 @@ export default function GerenciarAudios() {
                     <tbody className="divide-y divide-border">
                         {pastaAtual && !filtro && (
                             <tr onClick={voltarPastaAcima} className="hover:bg-background transition cursor-pointer text-text-muted">
-                                <td colSpan={5} className="p-4 font-bold flex items-center gap-3"><div className="p-2 bg-surface border border-border rounded-lg"><CornerUpLeft size={18} /></div>.. (Voltar para nível acima)</td>
+                                <td colSpan={5} className="p-4 font-bold flex items-center gap-3"><div className="p-2 bg-surface border border-border rounded-lg"><CornerUpLeft size={18} /></div>.. (Voltar acima)</td>
                             </tr>
                         )}
 
-                        {/* LINHAS DE PASTAS */}
+                        {/* RENDERIZAÇÃO DE PASTAS */}
                         {pastasFiltradas.map((pasta) => (
                             <tr key={pasta.id} className="hover:bg-background transition group">
-                                <td colSpan={2} className="p-4 cursor-pointer w-1/2" onClick={() => entrarNaPasta(pasta)}>
+                                <td className="p-4 w-12"></td> {/* Espaço vazio para alinhar com o checkbox */}
+                                <td colSpan={2} className="p-4 cursor-pointer" onClick={() => entrarNaPasta(pasta)}>
                                     <div className="flex items-center gap-3">
-                                        <div className="p-2 bg-primary/10 border border-primary/20 rounded-lg text-primary"><Folder size={18} className="fill-primary/20" /></div>
-                                        <div><p className="font-bold text-sm text-text-main group-hover:text-primary transition">{pasta.nome}</p></div>
+                                        <div className="p-2 bg-primary/10 border border-primary/20 rounded-lg text-primary"><Folder size={18} /></div>
+                                        <p className="font-bold text-sm text-text-main group-hover:text-primary">{pasta.nome}</p>
                                     </div>
                                 </td>
-                                <td className="p-4 w-1/4"></td>
-                                <td className="p-4 text-xs font-bold uppercase text-text-muted cursor-pointer" onClick={() => entrarNaPasta(pasta)}>Pasta</td>
+                                <td className="p-4 text-xs font-bold uppercase text-text-muted">Pasta</td>
                                 <td className="p-4 text-right">
-                                    <button onClick={() => excluirPasta(pasta.id)} disabled={deletandoId === pasta.id} title="Excluir Pasta" className="p-2 bg-background border border-transparent hover:border-red-200 hover:bg-red-50 text-text-muted hover:text-red-500 rounded-lg transition disabled:opacity-50">
-                                        {deletandoId === pasta.id ? <Loader2 size={16} className="animate-spin text-red-500" /> : <Trash2 size={16} />}
+                                    <button onClick={() => excluirPasta(pasta.id)} disabled={deletandoId === pasta.id} className="p-2 text-text-muted hover:text-red-500 transition">
+                                        {deletandoId === pasta.id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
                                     </button>
                                 </td>
                             </tr>
                         ))}
 
-                        {/* LINHAS DE ÁUDIOS */}
+                        {/* RENDERIZAÇÃO DE ÁUDIOS COM CHECKBOX */}
+                        {audiosFiltrados.length > 0 && (
+                            <tr className="bg-background/50 border-b-2 border-border/60">
+                                <td className="p-4 w-12 text-center">
+                                    <input type="checkbox" checked={todosSelecionados} onChange={toggleSelecionarTodos} className="w-4 h-4 rounded border-border text-primary cursor-pointer" title="Selecionar Todos os Áudios" />
+                                </td>
+                                <td colSpan={4} className="p-4 text-xs font-bold text-text-muted uppercase tracking-wider">
+                                    Selecionar Todos ({audiosFiltrados.length})
+                                </td>
+                            </tr>
+                        )}
+
                         {audiosFiltrados.map((audio) => (
-                            <tr key={audio.id} className="hover:bg-background transition text-text-main group">
+                            <tr key={audio.id} className={`hover:bg-background transition group ${selecionados.has(audio.id) ? 'bg-primary/5' : ''}`}>
+                                <td className="p-4 w-12 text-center" onClick={(e) => e.stopPropagation()}>
+                                    <input type="checkbox" checked={selecionados.has(audio.id)} onChange={() => toggleSelecao(audio.id)} className="w-4 h-4 rounded border-border text-primary cursor-pointer accent-primary" />
+                                </td>
                                 <td className="p-4 w-1/2">
                                     <div className="flex items-center gap-3">
-                                        <div className="p-2 bg-background border border-border rounded-lg text-text-muted">
+                                        <div className={`p-2 border rounded-lg ${selecionados.has(audio.id) ? 'bg-primary text-white border-primary' : 'bg-background border-border text-text-muted'}`}>
                                             {audio.tipo === 'musica' ? <Music size={18} /> : audio.tipo === 'vinheta' ? <Mic size={18} /> : <DollarSign size={18} />}
                                         </div>
                                         <div className="min-w-0">
-                                            <p className="font-bold text-sm truncate">{audio.titulo}</p>
+                                            <p className="font-bold text-sm truncate text-text-main">{audio.titulo}</p>
                                             {audio.artista && <p className="text-xs text-text-muted font-medium truncate">{audio.artista}</p>}
                                         </div>
                                     </div>
@@ -477,19 +544,15 @@ export default function GerenciarAudios() {
                                 </td>
                                 <td className="p-4 text-xs font-bold uppercase text-primary/70">{audio.tipo}</td>
                                 <td className="p-4 text-right flex justify-end gap-2">
-                                    <button onClick={() => setAudioEditando(audio)} title="Editar e Mover" className="p-2 bg-background border border-transparent hover:border-blue-200 hover:bg-blue-50 text-text-muted hover:text-blue-500 rounded-lg transition opacity-0 group-hover:opacity-100 focus:opacity-100">
+                                    <button onClick={() => setAudioEditando(audio)} className="p-2 text-text-muted hover:text-blue-500 transition opacity-0 group-hover:opacity-100">
                                         <Edit2 size={16} />
                                     </button>
-                                    <button onClick={() => excluirAudio(audio.id, audio.caminho_arquivo)} disabled={deletandoId === audio.id} title="Excluir Áudio" className="p-2 bg-background border border-transparent hover:border-red-200 hover:bg-red-50 text-text-muted hover:text-red-500 rounded-lg transition disabled:opacity-50">
-                                        {deletandoId === audio.id ? <Loader2 size={16} className="animate-spin text-red-500" /> : <Trash2 size={16} />}
+                                    <button onClick={() => excluirAudio(audio.id, audio.caminho_arquivo)} disabled={deletandoId === audio.id} className="p-2 text-text-muted hover:text-red-500 transition">
+                                        {deletandoId === audio.id ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
                                     </button>
                                 </td>
                             </tr>
                         ))}
-
-                        {pastasFiltradas.length === 0 && audiosFiltrados.length === 0 && (
-                            <tr><td colSpan={5} className="p-8 text-center text-text-muted font-medium">Nenhum ficheiro ou pasta encontrado aqui.</td></tr>
-                        )}
                     </tbody>
                 </table>
             </div>
