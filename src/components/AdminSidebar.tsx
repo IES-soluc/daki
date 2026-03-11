@@ -1,6 +1,5 @@
 'use client'
 import Link from 'next/link'
-// 1. Importamos o useRouter do Next.js
 import { usePathname, useRouter } from 'next/navigation'
 import { useState, useRef, useEffect } from 'react'
 import {
@@ -13,7 +12,6 @@ import { useConfig } from '@/components/ConfigProvider'
 
 export default function AdminSidebar() {
     const pathname = usePathname()
-    // 2. Instanciamos o router
     const router = useRouter()
     const { nome_radio } = useConfig()
 
@@ -21,11 +19,12 @@ export default function AdminSidebar() {
     const [isPlaying, setIsPlaying] = useState(false)
     const [isBuffering, setIsBuffering] = useState(false)
     const [musicaAtual, setMusicaAtual] = useState('Conectando...')
-    const [isAoVivo, setIsAoVivo] = useState(false)
+    const [radioModo, setRadioModo] = useState<'live' | 'normal' | 'standby' | 'offline'>('offline')
 
     const audioRef = useRef<HTMLAudioElement | null>(null)
     const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null)
-    const streamUrl = process.env.NEXT_PUBLIC_STREAM_URL || 'http://localhost:8000/live'
+    const streamUrl = process.env.NEXT_PUBLIC_STREAM_URL || 'https://radio.m2.ies.net.br/live'
+    const statsUrl = "https://radio.m2.ies.net.br/status-json.xsl"
 
     const menuItems = [
         { name: 'Centro de Comando', href: '/admin', icon: Home },
@@ -37,27 +36,30 @@ export default function AdminSidebar() {
         { name: 'Configurações', href: '/admin/configuracoes', icon: Settings },
     ]
 
-    // --- A IMPLEMENTAÇÃO CORRETA DO LOGOUT ---
     const handleLogout = async () => {
-        // 1. Apaga a sessão na API e limpa o LocalStorage
         const supabase = createClient()
         await supabase.auth.signOut()
-
-        // 2. Avisa o servidor Next.js para invalidar o cache da página atual
         router.refresh()
-
-        // 3. Dá tempo (300ms) para os Cookies serem fisicamente apagados do navegador
-        // antes de forçar o redirecionamento.
         setTimeout(() => {
             window.location.replace('/login')
         }, 300)
     }
 
-    // --- LÓGICA DE METADADOS DO PLAYER ---
+    // --- FUNÇÃO PARA CORRIGIR ACENTOS (MOJIBAKE) ---
+    const corrigirTexto = (str: string) => {
+        if (!str) return "";
+        try {
+            return decodeURIComponent(escape(str));
+        } catch (e) {
+            return str;
+        }
+    }
+
+    // --- LÓGICA DE METADADOS DO PLAYER COM 3 REGRAS DE PRIORIDADE ---
     useEffect(() => {
         const buscarMetadados = async () => {
             try {
-                const response = await fetch('/api/icecast', { cache: 'no-store' })
+                const response = await fetch(`${statsUrl}?nocache=${new Date().getTime()}`, { cache: 'no-store' })
                 if (!response.ok) return
 
                 const data = await response.json()
@@ -69,28 +71,52 @@ export default function AdminSidebar() {
                 const live = sources.find((s: any) => s && s.listenurl && s.listenurl.endsWith('/live'))
                 const autodj = sources.find((s: any) => s && s.listenurl && s.listenurl.endsWith('/autodj'))
 
-                let isLiveNow = false;
-                let textMusic = "Conectando...";
-
-                if (live && live.server_name && live.server_name !== 'Nossa Web Rádio') {
-                    isLiveNow = true; textMusic = live.title || live.server_description || "Acompanhe a transmissão";
-                } else if (autodj && autodj.server_name === 'Nossa Web Rádio') {
-                    isLiveNow = false; textMusic = autodj.title || autodj.server_description || "Programação Normal";
-                } else if (live) {
-                    isLiveNow = false; textMusic = live.title || live.server_description || "Rádio no Ar";
-                } else {
-                    isLiveNow = false; textMusic = "Rádio Offline";
+                // Limpeza e correção inicial
+                let tituloLive = "";
+                if (live) {
+                    tituloLive = corrigirTexto(live.title || live.server_description || "");
+                    if (tituloLive === "Unspecified name" || tituloLive === "Unspecified description") tituloLive = "";
                 }
 
-                setIsAoVivo(isLiveNow);
-                setMusicaAtual(textMusic);
+                let tituloAutodj = "";
+                if (autodj) {
+                    tituloAutodj = corrigirTexto(autodj.title || autodj.server_description || "");
+                    if (tituloAutodj === "Unspecified name" || tituloAutodj === "Unspecified description") tituloAutodj = "";
+                }
+
+                let modoAtual: 'live' | 'normal' | 'standby' | 'offline' = 'offline';
+                let textoAtual = "Conectando...";
+
+                // ==========================================
+                // ÁRVORE DE DECISÃO HIERÁRQUICA
+                // ==========================================
+                if (tituloLive !== "") {
+                    // Prioridade 1: Rota /live existe e tem nome
+                    modoAtual = 'live';
+                    textoAtual = tituloLive;
+                } else if (tituloAutodj.toUpperCase().includes("FALLBACK")) {
+                    // Prioridade 2: Música de Fallback (Stand-by)
+                    modoAtual = 'standby';
+                    textoAtual = tituloAutodj.replace(/FALLBACK\s*-\s*/i, "");
+                } else if (tituloAutodj !== "") {
+                    // Prioridade 3: Programação Normal
+                    modoAtual = 'normal';
+                    textoAtual = tituloAutodj;
+                } else {
+                    // Offline
+                    modoAtual = 'offline';
+                    textoAtual = "Rádio Offline";
+                }
+
+                setRadioModo(modoAtual);
+                setMusicaAtual(textoAtual);
             } catch (error) {
                 // Silêncio
             }
         }
 
         buscarMetadados()
-        const metaInterval = setInterval(buscarMetadados, 10000)
+        const metaInterval = setInterval(buscarMetadados, 4000)
         return () => clearInterval(metaInterval)
     }, [])
 
@@ -136,9 +162,18 @@ export default function AdminSidebar() {
         }
     }
 
+    // Auxiliar para a UI do mini-player
+    const getBadgeInfo = () => {
+        if (radioModo === 'live') return { color: 'bg-red-500', text: '🔴 Ao Vivo' };
+        if (radioModo === 'normal') return { color: 'bg-blue-500', text: '🎧 Normal' };
+        if (radioModo === 'standby') return { color: 'bg-slate-500', text: 'Stand-by' };
+        return { color: 'bg-red-900', text: 'Offline' };
+    }
+
+    const badge = getBadgeInfo();
+
     return (
         <aside className="w-72 bg-surface border-r border-border flex flex-col h-screen sticky top-0 transition-colors duration-300">
-
             {/* CABEÇALHO DO MENU */}
             <div className="p-6 border-b border-border flex items-center gap-3">
                 <div className="bg-primary p-2 rounded-lg text-white shadow-sm"><Radio size={20} /></div>
@@ -165,12 +200,12 @@ export default function AdminSidebar() {
                     {/* Informações da Música */}
                     <div className="flex flex-col overflow-hidden whitespace-nowrap flex-1">
                         <div className="flex items-center justify-between gap-2 mb-0.5">
-                            <span className="text-[10px] font-black uppercase tracking-wider text-text-muted">
-                                {isAoVivo ? 'Locutor Ao Vivo' : 'Estúdio Virtual'}
+                            <span className={`text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full text-white transition-colors ${badge.color}`}>
+                                {badge.text}
                             </span>
-                            {isAoVivo && <div className="w-1.5 h-1.5 bg-red-500 rounded-full animate-ping shrink-0" />}
+                            {radioModo === 'live' && <div className="w-1.5 h-1.5 bg-red-500 rounded-full animate-ping shrink-0" />}
                         </div>
-                        <p className="text-xs font-bold text-primary truncate" title={musicaAtual}>
+                        <p className="text-xs font-bold text-primary truncate mt-1" title={musicaAtual}>
                             {isBuffering ? 'Conectando...' : musicaAtual}
                         </p>
                     </div>

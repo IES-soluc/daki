@@ -3,17 +3,19 @@ import { useState, useEffect, useRef } from 'react'
 import {
     Headphones, Radio, Users, Activity,
     PlayCircle, Check, X, Clock, Music,
-    Zap, Square, RefreshCw, SkipForward, Search, Play, Settings2
+    Zap, Square, RefreshCw, SkipForward, Search, Play, Settings2, ListMusic
 } from 'lucide-react'
 import { useConfig } from '@/components/ConfigProvider'
 import { createClient } from '@/utils/supabase/client'
 import toast, { Toaster } from 'react-hot-toast'
 import Link from 'next/link'
 
-// Tipagens (Removidas as Notícias)
 interface DashboardStats { audios: number; regrasAtivas: number; pedidosPendentes: number; playlists: number; }
 interface Pedido { id: string; nome_ouvinte: string; mensagem: string; audios: { titulo: string; artista: string }; }
 interface AudioItem { id: string; titulo: string; artista: string; tipo: string; }
+
+// Adicionado 'modo' para separar Ao Vivo, Normal e Stand-by
+interface RadioStatus { isOnline: boolean; modo: 'live' | 'normal' | 'standby' | 'offline'; currentSong: string; }
 
 export default function AdminDashboard() {
     const supabase = createClient()
@@ -23,7 +25,10 @@ export default function AdminDashboard() {
     // Estados do Dashboard
     const [stats, setStats] = useState<DashboardStats>({ audios: 0, regrasAtivas: 0, pedidosPendentes: 0, playlists: 0 })
     const [ultimosPedidos, setUltimosPedidos] = useState<Pedido[]>([])
-    const [radioStatus, setRadioStatus] = useState({ isOnline: false, isLive: false, currentSong: 'Sincronizando...' })
+    const [radioStatus, setRadioStatus] = useState<RadioStatus>({ isOnline: false, modo: 'offline', currentSong: 'Sincronizando...' })
+
+    // Histórico da Playlist
+    const [historicoMusicas, setHistoricoMusicas] = useState<string[]>([])
 
     // Estados do Estúdio Virtual
     const [busca, setBusca] = useState('')
@@ -31,7 +36,6 @@ export default function AdminDashboard() {
     const [enviando, setEnviando] = useState(false)
     const dropdownRef = useRef<HTMLDivElement>(null)
 
-    // 1. CARREGAR DADOS DO DASHBOARD FOCADO NA RÁDIO
     const fetchDashboardData = async () => {
         try {
             const [countAudios, countRegras, countPedidos, countPlaylists, pedidosRecentes] = await Promise.all([
@@ -56,37 +60,91 @@ export default function AdminDashboard() {
 
     useEffect(() => { fetchDashboardData() }, [])
 
-    // 2. MONITOR DO ICECAST (SSE)
+    // --- FUNÇÃO PARA CORRIGIR ACENTOS (MOJIBAKE) ---
+    const corrigirTexto = (str: string) => {
+        if (!str) return "";
+        try {
+            return decodeURIComponent(escape(str));
+        } catch (e) {
+            return str;
+        }
+    }
+
+    // 2. MONITOR DO ICECAST COM POLLING E 3 REGRAS DE PRIORIDADE
     useEffect(() => {
-        const eventSource = new EventSource('/api/icecast')
-        eventSource.onmessage = (event) => {
+        const statsUrl = "https://radio.m2.ies.net.br/status-json.xsl"
+
+        const verificarIcecast = async () => {
             try {
-                const data = JSON.parse(event.data)
-                if (data.error) return setRadioStatus({ isOnline: false, isLive: false, currentSong: 'Transmissão Offline' })
+                const response = await fetch(`${statsUrl}?nocache=${new Date().getTime()}`)
+                if (!response.ok) throw new Error('Falha na rede')
+                const data = await response.json()
 
                 let sources = Array.isArray(data?.icestats?.source) ? data.icestats.source : (data?.icestats?.source ? [data.icestats.source] : [])
                 const live = sources.find((s: any) => s?.listenurl?.endsWith('/live'))
                 const autodj = sources.find((s: any) => s?.listenurl?.endsWith('/autodj'))
 
-                let isLiveNow = false
-                let textMusic = "Conectando..."
-
-                if (live && live.server_name && live.server_name !== 'Nossa Web Rádio') {
-                    isLiveNow = true; textMusic = live.title || live.server_description || "Acompanhe a transmissão"
-                } else if (autodj && autodj.server_name === 'Nossa Web Rádio') {
-                    isLiveNow = false; textMusic = autodj.title || autodj.server_description || "Programação Normal"
-                } else if (live) {
-                    isLiveNow = false; textMusic = live.title || live.server_description || "Rádio no Ar"
-                } else {
-                    return setRadioStatus({ isOnline: false, isLive: false, currentSong: 'Transmissão Offline' })
+                let tituloLive = "";
+                if (live) {
+                    tituloLive = corrigirTexto(live.title || live.server_description || "");
+                    if (tituloLive === "Unspecified name" || tituloLive === "Unspecified description") tituloLive = "";
                 }
-                setRadioStatus({ isOnline: true, isLive: isLiveNow, currentSong: textMusic })
-            } catch (err) { }
+
+                let tituloAutodj = "";
+                if (autodj) {
+                    tituloAutodj = corrigirTexto(autodj.title || autodj.server_description || "");
+                    if (tituloAutodj === "Unspecified name" || tituloAutodj === "Unspecified description") tituloAutodj = "";
+                }
+
+                let statusIsOnline = false;
+                let statusModo: 'live' | 'normal' | 'standby' | 'offline' = 'offline';
+                let textMusic = "Conectando...";
+
+                // ==========================================
+                // ÁRVORE DE DECISÃO HIERÁRQUICA
+                // ==========================================
+                if (tituloLive !== "") {
+                    // Prioridade 1: Rota /live existe e tem nome
+                    statusIsOnline = true;
+                    statusModo = 'live';
+                    textMusic = tituloLive;
+                } else if (tituloAutodj.toUpperCase().includes("FALLBACK")) {
+                    // Prioridade 2: Música começa com FALLBACK (Stand-by)
+                    statusIsOnline = true;
+                    statusModo = 'standby';
+                    textMusic = tituloAutodj.replace(/FALLBACK\s*-\s*/i, "");
+                } else if (tituloAutodj !== "") {
+                    // Prioridade 3: Programação Normal
+                    statusIsOnline = true;
+                    statusModo = 'normal';
+                    textMusic = tituloAutodj;
+                } else {
+                    statusIsOnline = false;
+                    statusModo = 'offline';
+                    textMusic = "Transmissão Offline";
+                }
+
+                setRadioStatus(prev => {
+                    // Histórico de músicas (evita lixo e duplicadas)
+                    if (prev.currentSong !== textMusic && textMusic !== "Conectando..." && textMusic !== "Transmissão Offline") {
+                        setHistoricoMusicas(hist => {
+                            if (hist[0] === textMusic) return hist;
+                            const novoHistorico = [textMusic, ...hist];
+                            return novoHistorico.slice(0, 6);
+                        });
+                    }
+                    return { isOnline: statusIsOnline, modo: statusModo, currentSong: textMusic }
+                })
+            } catch (err) {
+                // Em caso de falha de rede temporária, mantemos o último estado
+            }
         }
-        return () => eventSource.close()
+
+        verificarIcecast()
+        const interval = setInterval(verificarIcecast, 4000)
+        return () => clearInterval(interval)
     }, [])
 
-    // 3. BUSCA DE ÁUDIOS PARA O ESTÚDIO VIRTUAL
     useEffect(() => {
         const handler = setTimeout(() => {
             if (busca.length < 2) { setResultados([]); return }
@@ -107,7 +165,6 @@ export default function AdminDashboard() {
         return () => document.removeEventListener("mousedown", handleClickOutside)
     }, [dropdownRef])
 
-    // 4. AÇÕES (PEDIDOS E COMANDOS)
     const lidarComPedido = async (id: string, acao: 'aprovado' | 'rejeitado') => {
         const loadingToast = toast.loading('Processando...')
         const { error } = await supabase.from('pedidos').update({ status: acao }).eq('id', id)
@@ -128,6 +185,28 @@ export default function AdminDashboard() {
         }
     }
 
+    // Lógica para determinar a cor do badge no topo
+    const getBadgeColor = () => {
+        if (!radioStatus.isOnline) return 'text-red-600 dark:text-red-400';
+        if (radioStatus.modo === 'live') return 'text-red-500';
+        if (radioStatus.modo === 'normal') return 'text-blue-500';
+        return 'text-slate-500'; // Standby
+    }
+
+    const getBadgeBg = () => {
+        if (!radioStatus.isOnline) return 'bg-red-500/10 border-red-500/20';
+        if (radioStatus.modo === 'live') return 'bg-red-500/10 border-red-500/20';
+        if (radioStatus.modo === 'normal') return 'bg-blue-500/10 border-blue-500/20';
+        return 'bg-slate-500/10 border-slate-500/20'; // Standby
+    }
+
+    const getStatusText = () => {
+        if (radioStatus.modo === 'live') return '🔴 Locutor Ao Vivo';
+        if (radioStatus.modo === 'normal') return '🎧 Programação Normal';
+        if (radioStatus.modo === 'standby') return 'Estúdio Virtual (Stand-by)';
+        return 'Sistema Offline';
+    }
+
     if (loading) return <div className="p-10 flex justify-center text-primary"><Activity size={40} className="animate-spin" /></div>
 
     return (
@@ -140,14 +219,14 @@ export default function AdminDashboard() {
                     <h1 className="text-3xl font-black text-text-main tracking-tight">Centro de Comando</h1>
                     <p className="text-text-muted mt-1 font-medium">Estúdio Virtual da <strong className="text-primary">{nome_radio}</strong>.</p>
                 </div>
-                <div className={`flex items-center gap-4 px-6 py-4 rounded-2xl border ${radioStatus.isOnline ? 'bg-green-500/10 border-green-500/20' : 'bg-red-500/10 border-red-500/20'}`}>
+                <div className={`flex items-center gap-4 px-6 py-4 rounded-2xl border ${getBadgeBg()} transition-colors`}>
                     <div className="relative flex h-4 w-4 shrink-0">
-                        {radioStatus.isOnline && <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-500 opacity-75"></span>}
-                        <span className={`relative inline-flex rounded-full h-4 w-4 ${radioStatus.isOnline ? 'bg-green-500' : 'bg-red-500'}`}></span>
+                        {radioStatus.isOnline && <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${radioStatus.modo === 'live' ? 'bg-red-500' : radioStatus.modo === 'normal' ? 'bg-blue-500' : 'bg-slate-500'}`}></span>}
+                        <span className={`relative inline-flex rounded-full h-4 w-4 ${radioStatus.isOnline ? (radioStatus.modo === 'live' ? 'bg-red-500' : radioStatus.modo === 'normal' ? 'bg-blue-500' : 'bg-slate-500') : 'bg-red-500'}`}></span>
                     </div>
                     <div className="overflow-hidden">
-                        <p className={`text-xs font-black uppercase tracking-widest ${radioStatus.isOnline ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}`}>
-                            {radioStatus.isOnline ? (radioStatus.isLive ? 'Locutor Ao Vivo' : 'AutoDJ Operando') : 'Sistema Offline'}
+                        <p className={`text-xs font-black uppercase tracking-widest ${getBadgeColor()}`}>
+                            {getStatusText()}
                         </p>
                         <p className="text-text-main font-bold truncate max-w-[200px]" title={radioStatus.currentSong}>{radioStatus.currentSong}</p>
                     </div>
@@ -164,7 +243,6 @@ export default function AdminDashboard() {
                     </h2>
 
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                        {/* Botões de Ação */}
                         <div className="grid grid-cols-3 gap-4">
                             <button onClick={() => dispararComando('stop')} disabled={enviando} className="flex flex-col items-center justify-center p-4 bg-red-500/10 text-red-600 hover:bg-red-500 hover:text-white rounded-2xl transition-all font-bold gap-2 border border-red-500/20">
                                 <Square size={28} /> Parar
@@ -177,7 +255,6 @@ export default function AdminDashboard() {
                             </button>
                         </div>
 
-                        {/* Fura Fila / Tocar Efeito */}
                         <div className="space-y-3 relative" ref={dropdownRef}>
                             <label className="text-sm font-bold text-text-muted">Injetar Áudio Agora (Fura-Fila Absoluto)</label>
                             <div className="relative">
@@ -191,7 +268,6 @@ export default function AdminDashboard() {
                                 />
                             </div>
 
-                            {/* DROPDOWN BLINDADO */}
                             {resultados.length > 0 && (
                                 <div className="absolute top-full left-0 w-full mt-2 z-[100]">
                                     <ul className="bg-surface border border-border rounded-xl overflow-hidden shadow-2xl divide-y divide-border max-h-80 overflow-y-auto">
@@ -243,8 +319,10 @@ export default function AdminDashboard() {
                 </div>
             </div>
 
-            {/* INFERIOR: Pedidos e Atalhos */}
+            {/* INFERIOR: Pedidos, Histórico e Atalhos */}
             <div className="grid grid-cols-1 xl:grid-cols-3 gap-8">
+
+                {/* COLUNA ESQUERDA: Pedidos dos Ouvintes */}
                 <div className="xl:col-span-2 space-y-4">
                     <div className="flex items-center justify-between">
                         <h2 className="text-xl font-black text-text-main flex items-center gap-2"><Clock className="text-primary" size={20} /> Pedidos dos Ouvintes</h2>
@@ -277,22 +355,61 @@ export default function AdminDashboard() {
                     </div>
                 </div>
 
-                <div className="space-y-4">
-                    <h2 className="text-xl font-black text-text-main flex items-center gap-2"><PlayCircle className="text-primary" size={20} /> Ações Rápidas</h2>
-                    <div className="grid grid-cols-1 gap-4">
-                        <Link href="/admin/audios" className="bg-surface p-5 rounded-2xl border border-border hover:border-primary hover:shadow-sm transition-all group flex items-center justify-between">
-                            <div><h3 className="font-bold text-text-main group-hover:text-primary transition-colors">Subir Músicas</h3><p className="text-xs text-text-muted mt-1">Google Drive</p></div>
-                            <div className="bg-background p-3 rounded-full text-text-muted group-hover:bg-primary/10 group-hover:text-primary transition-colors"><Music size={20} /></div>
-                        </Link>
-                        <Link href="/admin/playlists" className="bg-surface p-5 rounded-2xl border border-border hover:border-primary hover:shadow-sm transition-all group flex items-center justify-between">
-                            <div><h3 className="font-bold text-text-main group-hover:text-primary transition-colors">Montar Grade</h3><p className="text-xs text-text-muted mt-1">Editar playlists e Blocos</p></div>
-                            <div className="bg-background p-3 rounded-full text-text-muted group-hover:bg-primary/10 group-hover:text-primary transition-colors"><Headphones size={20} /></div>
-                        </Link>
-                        <Link href="/admin/regras" className="bg-surface p-5 rounded-2xl border border-border hover:border-primary hover:shadow-sm transition-all group flex items-center justify-between">
-                            <div><h3 className="font-bold text-text-main group-hover:text-primary transition-colors">Ajustar Inteligência</h3><p className="text-xs text-text-muted mt-1">Regras do AutoDJ</p></div>
-                            <div className="bg-background p-3 rounded-full text-text-muted group-hover:bg-primary/10 group-hover:text-primary transition-colors"><Settings2 size={20} /></div>
-                        </Link>
+                {/* COLUNA DIREITA: Histórico e Ações Rápidas */}
+                <div className="space-y-8">
+
+                    {/* NOVA SEÇÃO: Playlist / Histórico */}
+                    <div className="space-y-4">
+                        <h2 className="text-xl font-black text-text-main flex items-center gap-2">
+                            <ListMusic className="text-primary" size={20} /> Tocaram Recentes
+                        </h2>
+
+                        <div className="bg-surface rounded-3xl shadow-sm border border-border overflow-hidden p-2">
+                            {historicoMusicas.length === 0 ? (
+                                <div className="p-8 text-center text-text-muted text-sm font-medium">
+                                    Aguardando a rádio tocar...
+                                </div>
+                            ) : (
+                                <ul className="divide-y divide-border/50">
+                                    {historicoMusicas.map((musica, index) => (
+                                        <li key={index} className="p-4 hover:bg-background/50 transition-colors flex items-center gap-3">
+                                            <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${index === 0 ? 'bg-primary text-white animate-pulse' : 'bg-background text-text-muted border border-border'}`}>
+                                                {index === 0 ? <Play size={14} fill="currentColor" className="ml-0.5" /> : <Clock size={14} />}
+                                            </div>
+                                            <div className="overflow-hidden">
+                                                <p className={`font-bold truncate text-sm ${index === 0 ? 'text-primary' : 'text-text-main'}`} title={musica}>
+                                                    {musica}
+                                                </p>
+                                                <p className="text-[10px] text-text-muted uppercase tracking-wider mt-0.5">
+                                                    {index === 0 ? 'Tocando Agora' : 'Tocou Antes'}
+                                                </p>
+                                            </div>
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                        </div>
                     </div>
+
+                    {/* Ações Rápidas */}
+                    <div className="space-y-4">
+                        <h2 className="text-xl font-black text-text-main flex items-center gap-2"><PlayCircle className="text-primary" size={20} /> Ações Rápidas</h2>
+                        <div className="grid grid-cols-1 gap-4">
+                            <Link href="/admin/audios" className="bg-surface p-5 rounded-2xl border border-border hover:border-primary hover:shadow-sm transition-all group flex items-center justify-between">
+                                <div><h3 className="font-bold text-text-main group-hover:text-primary transition-colors">Subir Músicas</h3><p className="text-xs text-text-muted mt-1">Google Drive</p></div>
+                                <div className="bg-background p-3 rounded-full text-text-muted group-hover:bg-primary/10 group-hover:text-primary transition-colors"><Music size={20} /></div>
+                            </Link>
+                            <Link href="/admin/playlists" className="bg-surface p-5 rounded-2xl border border-border hover:border-primary hover:shadow-sm transition-all group flex items-center justify-between">
+                                <div><h3 className="font-bold text-text-main group-hover:text-primary transition-colors">Montar Grade</h3><p className="text-xs text-text-muted mt-1">Editar playlists e Blocos</p></div>
+                                <div className="bg-background p-3 rounded-full text-text-muted group-hover:bg-primary/10 group-hover:text-primary transition-colors"><Headphones size={20} /></div>
+                            </Link>
+                            <Link href="/admin/regras" className="bg-surface p-5 rounded-2xl border border-border hover:border-primary hover:shadow-sm transition-all group flex items-center justify-between">
+                                <div><h3 className="font-bold text-text-main group-hover:text-primary transition-colors">Ajustar Inteligência</h3><p className="text-xs text-text-muted mt-1">Regras do AutoDJ</p></div>
+                                <div className="bg-background p-3 rounded-full text-text-muted group-hover:bg-primary/10 group-hover:text-primary transition-colors"><Settings2 size={20} /></div>
+                            </Link>
+                        </div>
+                    </div>
+
                 </div>
             </div>
         </div>
